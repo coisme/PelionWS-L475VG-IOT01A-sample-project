@@ -22,6 +22,12 @@
 
 #ifdef ENABLE_SENSORS
 #include "VL53L0X.h"
+// Workaround for compile error
+// SPI is defined in VL53L0X_i2c_platform.h
+#ifdef SPI
+#undef SPI
+#endif
+#include "HTS221Sensor.h"
 #endif /* ENABLE_SENSORS */
 
 // An event queue is a very useful structure to debounce information between contexts (e.g. ISR and normal threads)
@@ -40,6 +46,8 @@ MbedCloudClientResource *button_res;
 MbedCloudClientResource *pattern_res;
 #ifdef ENABLE_SENSORS
 MbedCloudClientResource *distance_res;
+MbedCloudClientResource *temperature_res;
+MbedCloudClientResource *humidity_res;
 #endif /* ENABLE_SENSORS */
 
 // This function gets triggered by the timer. It's easy to replace it by an InterruptIn and fall() mode on a real button
@@ -55,16 +63,39 @@ void button_press() {
 static DevI2C devI2c(PB_11,PB_10);
 static DigitalOut shutdown_pin(PC_6);
 static VL53L0X range(&devI2c, &shutdown_pin, PC_7);
+static HTS221Sensor hum_temp(&devI2c);
 
 void update_sensors() {
+    // Distance sensor
     uint32_t distance;
     int status = range.get_distance(&distance);
     if (status == VL53L0X_ERROR_NONE) {
         distance_res->set_value((int)distance);
-        printf("VL53L0X [mm]:            %6ld\r", distance);
+        printf("VL53L0X [mm]:            %6ld\n", distance);
     } else {
-        printf("VL53L0X [mm]:                --\r");
+        printf("VL53L0X [mm]:                --\n");
     }    
+
+    // Temperature sensor
+    float temperature = 0.0;
+    if(hum_temp.get_temperature(&temperature) == 0) {
+        printf("Temperature is %f degree.\n", temperature);
+        temperature_res->set_value(temperature);
+    } else {
+        printf("Error: failed to read temperature.\n");
+    }
+
+    // Humidity sensor
+    float humidity = 0.0;
+    if(hum_temp.get_humidity(&humidity) == 0) {
+        printf("Humidity is %f %%.\n", humidity);
+        humidity_res->set_value(humidity);
+    } else {
+        printf("Error: failed to read humidity.\n");
+    }
+
+    // Output an empty line for visibility
+    printf("\n");
 }
 #endif /* ENABLE_SENSORS */
 
@@ -141,6 +172,8 @@ int main(void) {
 
 #ifdef ENABLE_SENSORS
     range.init_sensor(VL53L0X_DEFAULT_ADDRESS);
+    hum_temp.init(NULL);
+    hum_temp.enable();
 #endif /* ENABLE_SENSORS */
 
     printf("Connecting to the network using Wifi...\n");
@@ -177,6 +210,16 @@ int main(void) {
     distance_res->set_value(0);
     distance_res->methods(M2MMethod::GET);
     distance_res->observable(true);
+
+    temperature_res = client.create_resource("3303/0/5700", "temperature");
+    temperature_res->set_value(0);
+    temperature_res->methods(M2MMethod::GET);
+    temperature_res->observable(true);
+
+    humidity_res = client.create_resource("3304/0/5700", "humidity");
+    humidity_res->set_value(0);
+    humidity_res->methods(M2MMethod::GET);
+    humidity_res->observable(true);
 #endif /* ENABLE_SENSORS */
 
     pattern_res = client.create_resource("3201/0/5853", "blink_pattern");
@@ -203,7 +246,7 @@ int main(void) {
 
 #ifdef ENABLE_SENSORS
     Ticker timer;
-    timer.attach(eventQueue.event(update_sensors), 1.0);
+    timer.attach(eventQueue.event(update_sensors), 3.0);
 #endif /* ENABLE_SENSORS */
 
     // You can easily run the eventQueue in a separate thread if required
